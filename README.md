@@ -1,8 +1,8 @@
 # Studio Audit Dashboard
 
 A single HTML page for exploring the JSON reports that `npm run audit` / `npm run scan` write to
-[`../reports/`](../reports/). It shows hardcoded secrets, direct API calls in browser code
-(Client-mode functions and forms), and configuration made available for client, broken down by
+[`../reports/`](../reports/). It shows hardcoded secrets, hardcoded endpoint URLs, direct API calls in
+client-side functions and form handlers, and configuration made available for client, broken down by
 app, kind of risk, item type and location.
 
 The page is self-contained (one file, no external scripts, fonts or network calls), so it works
@@ -45,9 +45,57 @@ different types add up.
   any column, and use **Export findings CSV** to export the rows that are currently filtered.
   Line numbers point into the item's code in the studio editor (for forms, into the handler shown
   under the form name).
+- **Reviewed config exceptions**: every entry of the loaded exceptions file with its status (see
+  below). Reviewed entries are removed from the HIGH counts, and a **Reviewed exceptions** tile
+  shows how many were applied.
 - **All apps**: per-app totals, branch and scan time. Click a row with findings to filter to it.
 - **Not scanned**: lists that failed to open and items whose code stayed empty after reopening.
   These should be rescanned or checked by hand.
+
+## Config exceptions file
+
+A business setting the client side needs may stay **available for client** after a manual review.
+Record each reviewed entry in one JSON file for the whole org, then load it with **Load config
+exceptions** (or drop it together with the reports). The file stays in your browser, like the reports.
+
+```json
+{
+  "kind": "studio-audit-config-exceptions",
+  "updatedOn": "2026-11-02",
+  "orgs": {
+    "Samunnati_Finance": {
+      "Renewal Process": [
+        { "entry": "maxLoanAmount", "reason": "Loan limit shown on the form", "reviewedBy": "QA - name", "reviewedOn": "2026-11-02" }
+      ]
+    }
+  }
+}
+```
+
+To start one, load the reports and click **Download exceptions template**. It lists every
+client-available entry that isn't API-related, and keeps whatever the loaded file already says.
+Delete the rows that must be switched off, then fill in the rest.
+
+| Status | Meaning |
+|---|---|
+| **Applied** | Reviewed business setting. Not counted as a finding. |
+| **Applied, review overdue** | `reviewedOn` is more than 7 days old. Still applied; review it this week and update the date. |
+| **Not applied: API-related entry** | The name looks like a URL, path, host, key, token, secret, password, scope or auth entry. These can never be exceptions; switch them off. |
+| **Not applied: needs reason, reviewedBy and reviewedOn** | Every exception needs all three, with the date as `YYYY-MM-DD`. |
+| **Not in report** | The entry is no longer available for client, or was renamed. Remove it from the file. |
+| **Not checked** | That app isn't in the loaded reports. |
+
+Only configuration entries can be exceptions. Secrets, endpoint URLs and API calls in code are
+always reported.
+
+## Exports
+
+- **Export findings CSV**: the findings currently filtered (`status` = `open`), followed by the
+  reviewed exceptions (`status` = `reviewed exception`, with reason, reviewer and date).
+- **Export consolidated report**: one JSON file, `<org>_consolidated_<date>.json`, combining all
+  loaded reports with the exceptions applied. Its `findings` are the open findings only; the
+  reviewed entries are listed under `exceptions`, and the file used is under `configExceptions`.
+  Use it for validation and sign-off. Loading it back into the dashboard shows the same numbers.
 
 ## Report checks
 

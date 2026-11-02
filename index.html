@@ -593,6 +593,22 @@
       color: var(--medium);
     }
 
+    .status.applied {
+      color: var(--ok);
+    }
+
+    .status.overdue {
+      color: var(--medium);
+    }
+
+    .status.rejected {
+      color: var(--high);
+    }
+
+    .status.gone {
+      color: var(--muted);
+    }
+
     .files {
       font-size: 12px;
       color: var(--muted);
@@ -631,8 +647,11 @@
       <div class="actions">
         <button class="btn" id="theme" type="button" title="Switch light / dark">Theme</button>
         <button class="btn" id="export" type="button" hidden>Export findings CSV</button>
+        <button class="btn" id="export-json" type="button" hidden>Export consolidated report</button>
+        <button class="btn" id="exc-pick" type="button" title="JSON file of reviewed configuration exceptions">Load config exceptions</button>
         <button class="btn primary" id="pick" type="button">Load report JSON</button>
         <input id="file" type="file" accept=".json,application/json" multiple hidden>
+        <input id="exc-file" type="file" accept=".json,application/json" hidden>
       </div>
     </div>
 
@@ -646,6 +665,8 @@
       </ul>
       <p class="muted small">Pick several files to combine them; for each app, the newest scan of each item type
         (function, service, form, configuration) wins. Files stay in your browser and are not uploaded anywhere.</p>
+      <p class="muted small">Config exceptions file (<code>&lt;org&gt;_config-exceptions.json</code>): drop it with the reports,
+        or use <b>Load config exceptions</b>. Reviewed entries are shown as exceptions instead of HIGH findings.</p>
     </section>
 
     <div id="banners"></div>
@@ -667,8 +688,8 @@
 
         <section class="card" id="risks">
           <h2>By kind of risk</h2>
-          <p class="muted small">Hardcoded secrets, direct API calls in code that runs in the browser (Client-mode
-            functions, forms), and configuration made available for client.</p>
+          <p class="muted small">Hardcoded secrets, hardcoded endpoint URLs, direct API calls in client-side functions and
+            form handlers, and configuration made available for client.</p>
           <div class="hbars" id="kind-chart"></div>
         </section>
 
@@ -727,6 +748,32 @@
                 <th data-k="maskedValue"><button type="button">Value</button></th>
                 <th data-k="reason" class="wide-only"><button type="button">Reason</button></th>
                 <th data-k="location" class="wide-only"><button type="button">Where</button></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" id="exc" hidden>
+        <h2>Reviewed config exceptions</h2>
+        <p class="muted small" id="x-sub">Business settings that may stay available for client after a manual review.
+          Applied entries are not counted as findings. API-related entries (URLs, paths, hosts, keys, tokens, secrets,
+          auth) can never be exceptions.</p>
+        <div class="tools">
+          <button class="btn" id="x-template" type="button" title="Exceptions file listing every client-available entry that is not API-related, ready to fill in">Download exceptions template</button>
+          <span class="count" id="x-count"></span>
+        </div>
+        <div class="scroll" style="max-height:420px">
+          <table id="x-table">
+            <thead>
+              <tr>
+                <th data-k="status"><button type="button">Status</button></th>
+                <th data-k="app"><button type="button">App</button></th>
+                <th data-k="entry"><button type="button">Entry</button></th>
+                <th data-k="reason" class="wide-only"><button type="button">Why it stays on</button></th>
+                <th data-k="reviewedBy"><button type="button">Reviewed by</button></th>
+                <th data-k="reviewedOn"><button type="button">Reviewed on</button></th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -798,9 +845,13 @@
 
       let model = null;
       // kind of risk, from the finding's type / reason
-      const KIND = { secret: 'Hardcoded secret', api: 'API call in browser code', config: 'Config available for client' };
-      const kindOf = (f) => (f.type === 'configuration' ? KIND.config : /^direct API call/i.test(f.reason || '') ? KIND.api : KIND.secret);
-      const state = { sev: '', app: '', kind: '', loc: '', q: '', aq: '', fSort: { k: 'severity', dir: 1 }, aSort: { k: 'HIGH', dir: -1 }, uSort: { k: 'app', dir: 1 } };
+      const KIND = { secret: 'Hardcoded secret', url: 'Hardcoded endpoint URL', api: 'API call in client-side code', config: 'Config available for client' };
+      const kindOf = (f) => (f.type === 'configuration' ? KIND.config : /^direct API call/i.test(f.reason || '') ? KIND.api : /^hardcoded (?:endpoint )?URL/i.test(f.reason || '') ? KIND.url : KIND.secret);
+      const state = { sev: '', app: '', kind: '', loc: '', q: '', aq: '', fSort: { k: 'severity', dir: 1 }, aSort: { k: 'HIGH', dir: -1 }, uSort: { k: 'app', dir: 1 }, xSort: { k: 'app', dir: 1 } };
+      // reviewed configuration exceptions (loaded from a JSON file; kept when new reports are loaded)
+      const EXC_KIND = 'studio-audit-config-exceptions';
+      const REVIEW_DAYS = 7; // weekly review: older approvals still apply but are flagged
+      let exc = null, lastUnits = null, lastFiles = [], lastNotes = [];
 
       // ---------------------------------------------------------------- theme
       $('theme').addEventListener('click', () => {
@@ -820,25 +871,80 @@
       ['dragleave', 'drop'].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === 'drop' || e.target === drop) drop.classList.remove('over'); }));
       document.addEventListener('drop', (e) => { const fs = [...(e.dataTransfer?.files || [])].filter((f) => /\.json$/i.test(f.name) || f.type === 'application/json'); if (fs.length) load(fs); });
 
-      async function load(files) {
+      $('exc-pick').addEventListener('click', () => $('exc-file').click());
+      $('exc-file').addEventListener('change', () => { load([...$('exc-file').files], true); $('exc-file').value = ''; });
+
+      async function load(files, asExceptions) {
         if (!files.length) return;
         const parsed = [], problems = [];
         for (const f of files) {
           try { parsed.push({ name: f.name, json: JSON.parse(await f.text()) }); }
           catch (e) { problems.push(`${f.name}: not valid JSON (${e.message})`); }
         }
-        const units = [], notes = [];
+        const units = [], notes = [], reportNames = [];
+        let excNew = null;
         for (const p of parsed) {
-          try { units.push(...normalize(p.json, p.name, notes)); }
+          if (asExceptions || isExceptionsFile(p.json)) {
+            try { excNew = parseExceptions(p.json, p.name); } catch (e) { problems.push(`${p.name}: ${e.message}`); }
+            continue;
+          }
+          try { units.push(...normalize(p.json, p.name, notes)); reportNames.push(p.name); }
           catch (e) { problems.push(`${p.name}: ${e.message}`); }
         }
-        if (!units.length) { showBanners(problems, notes); return; }
-        model = buildModel(units, parsed.map((p) => p.name));
-        Object.assign(state, { sev: '', app: '', kind: '', loc: '', q: '', aq: '' });
-        $('f-q').value = ''; $('a-q').value = '';
-        showBanners(problems, notes);
+        if (excNew) exc = excNew;
+        if (units.length) {
+          lastUnits = units; lastFiles = reportNames; lastNotes = notes;
+          Object.assign(state, { sev: '', app: '', kind: '', loc: '', q: '', aq: '' });
+          $('f-q').value = ''; $('a-q').value = '';
+        }
+        if (!lastUnits) {
+          showBanners(problems, notes, excNew ? [`Loaded ${fmt(excNew.list.length)} exception(s) from ${excNew.fileName}. Now load the scan report JSON files to apply them.`] : []);
+          return;
+        }
+        if (!units.length && !excNew) { showBanners(problems, lastNotes, model ? model.excNotes : []); return; }
+        model = buildModel(lastUnits, lastFiles);
+        showBanners(problems, lastNotes, model.excNotes);
         render();
       }
+
+      // ---------------------------------------------------------------- config exceptions file
+      // { "kind": "studio-audit-config-exceptions", "updatedOn": "YYYY-MM-DD",
+      //   "orgs": { "<org>": { "<app>": [ { "entry", "reason", "reviewedBy", "reviewedOn" } ] } } }
+      function isExceptionsFile(j) {
+        return !!j && typeof j === 'object' && (j.kind === EXC_KIND || (!!j.orgs && typeof j.orgs === 'object' && !Array.isArray(j.orgs) && !Array.isArray(j.items)));
+      }
+      function parseExceptions(j, fileName) {
+        const shape = 'expected { "orgs": { "<org>": { "<app>": [ { "entry", "reason", "reviewedBy", "reviewedOn" } ] } } }';
+        if (!j || !j.orgs || typeof j.orgs !== 'object' || Array.isArray(j.orgs)) throw new Error('not a config exceptions file: ' + shape);
+        const list = [];
+        for (const [org, apps] of Object.entries(j.orgs)) {
+          if (!apps || typeof apps !== 'object' || Array.isArray(apps)) throw new Error(`org "${org}": ${shape}`);
+          for (const [app, entries] of Object.entries(apps)) {
+            if (!Array.isArray(entries)) throw new Error(`${org} › ${app}: expected a list of entries`);
+            for (const e of entries) {
+              const o = typeof e === 'string' ? { entry: e } : (e && typeof e === 'object' ? e : {});
+              const s = (v) => String(v ?? '').trim();
+              list.push({ org, app, entry: s(o.entry ?? o.name), reason: s(o.reason), reviewedBy: s(o.reviewedBy), reviewedOn: s(o.reviewedOn) });
+            }
+          }
+        }
+        return { fileName, updatedOn: String(j.updatedOn || ''), list };
+      }
+      // API-related entry names can never be exceptions: URLs, paths, hosts, keys, tokens, secrets, auth
+      const API_WORDS = new Set(['url', 'urls', 'uri', 'endpoint', 'endpoints', 'host', 'hostname', 'domain', 'port', 'path', 'api', 'apis', 'apikey', 'key', 'keys',
+        'token', 'tokens', 'secret', 'secrets', 'password', 'passwd', 'pwd', 'auth', 'oauth', 'authorization', 'bearer', 'scope', 'cookie', 'cookies',
+        'credential', 'credentials', 'cert', 'certificate', 'login', 'username', 'webhook']);
+      function apiLike(name) {
+        const words = String(name).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+        return words.some((w) => API_WORDS.has(w) || /^api|api$|url|endpoint|token|secret|passw|auth|cookie|credential|webhook/.test(w)) ||
+          /clientid|clientsecret|accesskey|privatekey/.test(words.join(''));
+      }
+      function ageDays(s) {
+        if (!/^\d{4}-\d{2}-\d{2}/.test(s)) return null;
+        const d = new Date(s.slice(0, 10) + 'T00:00:00');
+        return isNaN(d) ? null : Math.max(0, Math.floor((Date.now() - d) / 864e5));
+      }
+      const normKey = (s) => String(s ?? '').toLowerCase().replace(/[\s_-]+/g, '');
 
       // Turns any report shape into per-app units: { app, org, branch, scannedAt, items[], findings[] }
       function normalize(j, fileName, notes) {
@@ -855,12 +961,14 @@
           }];
         }
         if (!Array.isArray(j.items) || !Array.isArray(j.findings)) throw new Error('missing "items" or "findings" — not a studio-audit report');
+        // a consolidated report exported from here carries its reviewed exceptions separately; keep them
+        const carried = (Array.isArray(j.exceptions) ? j.exceptions : []).filter((f) => f && f.exception);
 
         // app report
         if (j.app && !Array.isArray(j.apps)) {
           const items = j.items.map((i) => ({ ...i, app: i.app || j.app }));
           checkTotals(j.totals, items, j.findings, `${fileName}`, notes);
-          return [{ app: j.app, org, branch: j.branch ?? null, scannedAt, file: fileName, items, findings: j.findings.map((f) => ({ ...f, app: f.app || j.app })) }];
+          return [{ app: j.app, org, branch: j.branch ?? null, scannedAt, file: fileName, items, findings: [...j.findings, ...carried].map((f) => ({ ...f, app: f.app || j.app })) }];
         }
 
         // org report: items may lack "app" (older merged runs) -> infer per contiguous run from findings
@@ -901,7 +1009,7 @@
           if (!byApp.has(it.app)) byApp.set(it.app, { app: it.app, org, branch: branchOf.get(it.app) ?? null, scannedAt, file: fileName, items: [], findings: [] });
           byApp.get(it.app).items.push(it);
         }
-        for (const f of j.findings) {
+        for (const f of [...j.findings, ...carried]) {
           if (!byApp.has(f.app)) byApp.set(f.app, { app: f.app, org, branch: branchOf.get(f.app) ?? null, scannedAt, file: fileName, items: [], findings: [] });
           byApp.get(f.app).findings.push(f);
         }
@@ -946,36 +1054,77 @@
             findings: picked.flatMap(([t, u]) => u.findings.filter((f) => (f.type || 'function') === t)),
           });
         }
-        const apps = [...byApp.values()].map((u) => ({ app: u.app, branch: u.branch || '', scannedAt: u.scannedAt, org: u.org, file: u.file, ...totalsOf(u.items, u.findings) }));
-        const items = [...byApp.values()].flatMap((u) => u.items);
-        const findings = [...byApp.values()].flatMap((u) => u.findings).map((f) => ({
-          app: f.app, type: f.type || 'function', name: f.functionName ?? f.name ?? '', line: Number(f.line) || 0, column: f.column,
+        // ---- reviewed config exceptions: only "available for client" configuration findings, never code findings
+        const cfg = new Map(), cfgApps = new Set(), excepted = new Map(), excRows = [];
+        for (const u of byApp.values()) {
+          const ak = normKey(u.org) + '|' + normKey(u.app);
+          if (u.items.some((i) => i.type === 'configuration' && i.status === 'scanned') || u.findings.some((f) => f.type === 'configuration')) cfgApps.add(ak);
+          for (const f of u.findings) if (f.type === 'configuration') cfg.set(ak + '|' + String(f.item ?? f.functionName ?? '').trim(), f);
+        }
+        const verdict = (days) => (days > REVIEW_DAYS ? ['overdue', `Applied, review overdue (${days} days)`] : ['applied', 'Applied']);
+        if (exc) {
+          for (const e of exc.list) {
+            const ak = normKey(e.org) + '|' + normKey(e.app), f = cfg.get(ak + '|' + e.entry), days = ageDays(e.reviewedOn);
+            let st;
+            if (!e.entry) st = ['rejected', 'Not applied: no entry name'];
+            else if (apiLike(e.entry)) st = ['rejected', 'Not applied: API-related entry, it must be switched off'];
+            else if (!e.reason || !e.reviewedBy || !e.reviewedOn) st = ['rejected', 'Not applied: needs reason, reviewedBy and reviewedOn'];
+            else if (days == null) st = ['rejected', 'Not applied: reviewedOn must be a date (YYYY-MM-DD)'];
+            else if (!f) st = cfgApps.has(ak) ? ['gone', 'Not in report: entry is off or renamed (remove it from the file)'] : ['gone', 'Not checked: app not in the loaded reports'];
+            else if (excepted.has(f)) st = ['gone', 'Duplicate entry in the file'];
+            else { excepted.set(f, { reason: e.reason, reviewedBy: e.reviewedBy, reviewedOn: e.reviewedOn }); st = verdict(days); }
+            excRows.push({ org: e.org, app: e.app, entry: e.entry, reason: e.reason, reviewedBy: e.reviewedBy, reviewedOn: e.reviewedOn, cls: st[0], status: st[1] });
+          }
+        } else {
+          for (const f of cfg.values()) if (f.exception) {
+            const x = f.exception, st = verdict(ageDays(String(x.reviewedOn || '')) ?? 0);
+            excepted.set(f, x);
+            excRows.push({ org: f.org, app: f.app, entry: f.item, reason: x.reason || '', reviewedBy: x.reviewedBy || '', reviewedOn: x.reviewedOn || '', cls: st[0], status: st[1] + ' (from the loaded report)' });
+          }
+        }
+        for (const [k, u] of byApp) {
+          const open = u.findings.filter((f) => !excepted.has(f)), cfgOpen = open.filter((f) => f.type === 'configuration');
+          byApp.set(k, { ...u, findings: open, excepted: u.findings.filter((f) => excepted.has(f)), items: u.items.map((i) => (i.type === 'configuration' ? { ...i, counts: countSev(cfgOpen) } : i)) });
+        }
+        const toRow = (f, org) => ({
+          org: f.org || org || '', app: f.app, type: f.type || 'function', name: f.functionName ?? f.name ?? '', line: Number(f.line) || 0, column: f.column,
           item: f.item ?? '', location: f.location || 'code', severity: f.severity, reason: f.reason ?? '', maskedValue: f.maskedValue ?? '', snippet: f.codeSnippet ?? '',
           handler: f.handler ?? '', kind: kindOf(f),
-        }));
+        });
+
+        const apps = [...byApp.values()].map((u) => ({ app: u.app, branch: u.branch || '', scannedAt: u.scannedAt, org: u.org, file: u.file, exceptions: u.excepted.length, ...totalsOf(u.items, u.findings) }));
+        const items = [...byApp.values()].flatMap((u) => u.items);
+        const findings = [...byApp.values()].flatMap((u) => u.findings.map((f) => toRow(f, u.org)));
+        const exceptedRows = [...byApp.values()].flatMap((u) => u.excepted.map((f) => ({ ...toRow(f, u.org), exception: excepted.get(f) })));
         const unscanned = items.filter((i) => i.status !== 'scanned').map((i) => ({ app: i.app, type: i.type, name: i.name, status: i.status, error: String(i.error || '').split('\n')[0] }));
         const totals = { apps: apps.length, appsWithFindings: apps.filter((a) => a.HIGH + a.MEDIUM + a.LOW > 0).length, ...totalsOf(items, findings) };
         const orgs = [...new Set(apps.map((a) => a.org).filter(Boolean))];
         const dates = apps.map((a) => a.scannedAt).filter(Boolean).sort();
-        return { apps, items, findings, unscanned, totals, orgs, dates, fileNames };
+        const n = (c) => excRows.filter((r) => r.cls === c).length, excNotes = [];
+        if (n('rejected')) excNotes.push(`${fmt(n('rejected'))} exception(s) were not applied (API-related, or missing reason / reviewer / date). See "Reviewed config exceptions".`);
+        if (n('overdue')) excNotes.push(`${fmt(n('overdue'))} exception(s) were last reviewed more than ${REVIEW_DAYS} days ago. They still apply; review them this week.`);
+        if (n('gone')) excNotes.push(`${fmt(n('gone'))} exception(s) match nothing in the loaded reports (entry switched off, renamed, or app not loaded).`);
+        return { apps, items, findings, excepted: exceptedRows, excRows, excNotes, unscanned, totals, orgs, dates, fileNames };
       }
 
-      function showBanners(problems, notes) {
+      function showBanners(problems, notes, excNotes = []) {
         const box = $('banners'); box.replaceChildren();
         if (problems.length) { const b = el('div', 'banner err'); b.append(el('b', null, 'Some files could not be read')); problems.forEach((p) => b.append(el('span', null, p))); box.append(b); }
         if (notes.length) { const b = el('div', 'banner warn'); b.append(el('b', null, 'Report checks')); notes.forEach((p) => b.append(el('span', null, p))); box.append(b); }
+        if (excNotes.length) { const b = el('div', 'banner warn'); b.append(el('b', null, 'Config exceptions')); excNotes.forEach((p) => b.append(el('span', null, p))); box.append(b); }
       }
 
       // ---------------------------------------------------------------- render
       function render() {
         const m = model, t = m.totals;
-        $('dash').hidden = false; $('export').hidden = false;
+        $('dash').hidden = false; $('export').hidden = false; $('export-json').hidden = false;
         $('drop').hidden = true;
         $('title').textContent = (m.orgs.length === 1 ? m.orgs[0].replace(/_/g, ' ') + ' — ' : '') + 'Studio Audit';
         document.title = (m.orgs[0] ? m.orgs[0].replace(/_/g, ' ') + ' Studio Audit' : 'Studio Audit Dashboard');
         const d0 = m.dates[0], d1 = m.dates[m.dates.length - 1];
         const fd = (s) => { const d = new Date(s); return isNaN(d) ? s : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); };
-        $('subtitle').textContent = `${m.fileNames.length} file(s) loaded · ${d0 ? (d0 === d1 ? 'scanned ' + fd(d0) : `scanned ${fd(d0)} – ${fd(d1)}`) : 'scan time unknown'}`;
+        $('subtitle').textContent = `${m.fileNames.length} file(s) loaded · ${d0 ? (d0 === d1 ? 'scanned ' + fd(d0) : `scanned ${fd(d0)} – ${fd(d1)}`) : 'scan time unknown'}` +
+          (exc ? ` · exceptions: ${exc.fileName}` : m.excepted.length ? ' · exceptions from the loaded report' : '');
 
         const take = $('take'); take.replaceChildren();
         const b = (n) => el('b', null, fmt(n));
@@ -984,19 +1133,23 @@
           const n = (k) => high.filter((f) => f.kind === k).length;
           take.append(b(t.HIGH), ' HIGH-severity findings in ', b(t.appsWithFindings), ' of ', b(t.apps), ' apps.');
           if (n(KIND.secret)) take.append(' ', b(n(KIND.secret)), ' hardcoded secrets: move each into ', el('code', null, 'a8config.getConfig()'), ' and rotate the credential.');
-          if (n(KIND.api)) take.append(' ', b(n(KIND.api)), ' direct API calls in browser code (Client-mode functions, forms): use a platform SDK call or a Server-mode function.');
-          if (n(KIND.config)) take.append(' ', b(n(KIND.config)), ' configuration entries made available for client: turn the toggle off.');
+          if (n(KIND.api)) take.append(' ', b(n(KIND.api)), ' direct API calls in client-side functions or form handlers: use a platform SDK call or a server-side function.');
+          if (n(KIND.config)) take.append(' ', b(n(KIND.config)), ' configuration entries made available for client: review each one; API-related entries go off once the client-side code using them has moved server side, business settings may stay on.');
         } else take.append('No HIGH-severity findings across ', b(t.apps), ' apps.');
+        const urls = m.findings.filter((f) => f.kind === KIND.url).length;
+        if (urls) take.append(' ', b(urls), ' hardcoded endpoint URLs: move them into configuration (a base URL config, plus an endpoint path config per API).');
         if (t.empty + t.errors) take.append(' ', b(t.empty + t.errors), ' items could not be read and are unchecked.');
+        if (m.excepted.length) take.append(' ', b(m.excepted.length), ' configuration entries are reviewed exceptions and are not counted.');
 
         const tiles = $('tiles'); tiles.replaceChildren();
         const tile = (cls, lbl, n, sub) => { const d = el('div', 'tile ' + cls); d.append(el('span', 'lbl', lbl), el('span', 'big', fmt(n)), el('span', 'sub', sub)); tiles.append(d); };
-        tile('high', 'HIGH findings', t.HIGH, 'Secrets, browser API calls, client config');
-        tile('medium', 'MEDIUM findings', t.MEDIUM, 'Likely keys, high entropy');
+        tile('high', 'HIGH findings', t.HIGH, 'Secrets, client-side API calls, client config');
+        tile('medium', 'MEDIUM findings', t.MEDIUM, 'Endpoint URLs, likely keys');
         tile('low', 'LOW findings', t.LOW, 'Tracking cookies');
         tile('', 'Items with findings', t.withFindings, `in ${fmt(t.appsWithFindings)} app(s)`);
         tile('ok', 'Items scanned', t.scanned, `of ${fmt(t.items)} in ${fmt(t.apps)} app(s)`);
         tile('', 'Not scanned', t.empty + t.errors, `${fmt(t.errors)} errors, ${fmt(t.empty)} empty code`);
+        if (exc || m.excepted.length) tile('ok', 'Reviewed exceptions', m.excepted.length, 'Config entries, not counted');
 
         drawAppChart();
         drawGroupBars($('kind-chart'), groupBy(m.findings, 'kind'));
@@ -1007,7 +1160,7 @@
         fillSelect($('f-app'), 'All apps', [...new Set(m.findings.map((f) => f.app))].sort((a, b) => a.localeCompare(b)));
         fillSelect($('f-kind'), 'Any kind', Object.values(KIND).filter((k) => m.findings.some((f) => f.kind === k)));
         fillSelect($('f-loc'), 'Anywhere', [...new Set(m.findings.map((f) => f.location))].sort());
-        drawFindings(); drawApps(); drawUnscanned();
+        drawFindings(); drawApps(); drawUnscanned(); drawExc();
       }
 
       function fillSelect(sel, all, values) { sel.replaceChildren(new Option(all, ''), ...values.map((v) => new Option(v, v))); }
@@ -1195,17 +1348,87 @@
       }
       wireSort($('u-table'), 'uSort', drawUnscanned);
 
-      // ---------------------------------------------------------------- CSV export of the filtered findings
-      $('export').addEventListener('click', () => {
-        const cols = ['severity', 'kind', 'app', 'type', 'name', 'handler', 'line', 'item', 'maskedValue', 'reason', 'location', 'snippet'];
-        const esc = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-        const rows = sortRows(filteredFindings(), state.fSort);
-        const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n');
+      // ---------------------------------------------------------------- reviewed config exceptions
+      function drawExc() {
+        const all = model.excRows;
+        $('exc').hidden = !(exc || all.length || model.findings.some((f) => f.type === 'configuration'));
+        const rows = sortRows(all, state.xSort);
+        showSort($('x-table'), state.xSort);
+        const applied = all.filter((r) => r.cls === 'applied' || r.cls === 'overdue').length;
+        $('x-count').textContent = exc ? `${fmt(applied)} of ${fmt(all.length)} applied · ${exc.fileName}${exc.updatedOn ? ' · updated ' + exc.updatedOn : ''}`
+          : all.length ? `${fmt(applied)} from the loaded report` : 'No exceptions file loaded';
+        const frag = document.createDocumentFragment();
+        for (const r of rows) {
+          const tr = document.createElement('tr');
+          td(tr, r.status, 'status ' + r.cls); td(tr, r.app); tr.insertCell().append(el('code', null, r.entry));
+          td(tr, r.reason, 'wide-only'); td(tr, r.reviewedBy); td(tr, r.reviewedOn);
+          frag.append(tr);
+        }
+        if (!rows.length) { const tr = document.createElement('tr'); const c = td(tr, 'Load a config exceptions file, or download the template to start one.', 'muted'); c.colSpan = 6; frag.append(tr); }
+        $('x-table').tBodies[0].replaceChildren(frag);
+      }
+      wireSort($('x-table'), 'xSort', drawExc);
+
+      function download(text, name, type) {
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' }));
-        a.download = `${(model.orgs[0] || 'studio-audit')}_findings.csv`;
+        a.href = URL.createObjectURL(new Blob([text], { type }));
+        a.download = name.replace(/[\\/:*?"<>|]+/g, '_');
         document.body.append(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }
+      const today = () => new Date().toISOString().slice(0, 10);
+      const orgName = () => model.orgs[0] || 'studio-audit';
+
+      // template: every client-available entry that is not API-related, keeping what the loaded file already says
+      $('x-template').addEventListener('click', () => {
+        const known = new Map((exc ? exc.list : []).map((e) => [normKey(e.org) + '|' + normKey(e.app) + '|' + e.entry, e]));
+        const orgs = {};
+        let n = 0;
+        for (const f of [...model.findings, ...model.excepted]) {
+          if (f.type !== 'configuration' || apiLike(f.item)) continue;
+          const org = f.org || orgName(), prev = known.get(normKey(org) + '|' + normKey(f.app) + '|' + f.item) || f.exception || {};
+          ((orgs[org] ??= {})[f.app] ??= []).push({ entry: f.item, reason: prev.reason || '', reviewedBy: prev.reviewedBy || '', reviewedOn: prev.reviewedOn || '' });
+          n++;
+        }
+        if (!n) { $('x-count').textContent = 'No template: every client-available entry looks API-related, so none can be an exception.'; return; }
+        download(JSON.stringify({ kind: EXC_KIND, updatedOn: today(), orgs }, null, 2) + '\n', `${orgName()}_config-exceptions.json`, 'application/json');
+      });
+
+      // ---------------------------------------------------------------- CSV export: filtered findings, plus the reviewed exceptions
+      $('export').addEventListener('click', () => {
+        const cols = ['status', 'severity', 'kind', 'app', 'type', 'name', 'handler', 'line', 'item', 'maskedValue', 'reason', 'location', 'snippet', 'exceptionReason', 'reviewedBy', 'reviewedOn'];
+        const esc = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+        const rows = [
+          ...sortRows(filteredFindings(), state.fSort).map((r) => ({ ...r, status: 'open' })),
+          ...model.excepted.filter((r) => !state.app || r.app === state.app)
+            .map((r) => ({ ...r, status: 'reviewed exception', exceptionReason: r.exception.reason, reviewedBy: r.exception.reviewedBy, reviewedOn: r.exception.reviewedOn })),
+        ];
+        download('﻿' + [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n'), `${orgName()}_findings.csv`, 'text/csv');
+      });
+
+      // ---------------------------------------------------------------- consolidated report JSON (all loaded files, exceptions applied)
+      $('export-json').addEventListener('click', () => {
+        const m = model;
+        const back = (f) => ({ org: f.org, app: f.app, type: f.type, functionName: f.name, line: f.line, column: f.column ?? 0, item: f.item, location: f.location,
+          maskedValue: f.maskedValue, reason: f.reason, severity: f.severity, codeSnippet: f.snippet, ...(f.handler ? { handler: f.handler } : {}) });
+        const pick = (t) => ({ items: t.items, scanned: t.scanned, empty: t.empty, errors: t.errors, withFindings: t.withFindings, HIGH: t.HIGH, MEDIUM: t.MEDIUM, LOW: t.LOW });
+        const report = {
+          org: m.orgs.join(', '),
+          types: [...new Set(m.items.map((i) => i.type || 'function'))],
+          scannedAt: m.dates[m.dates.length - 1] || '',
+          consolidatedAt: new Date().toISOString(),
+          sourceFiles: m.fileNames,
+          configExceptions: {
+            file: exc ? exc.fileName : null, updatedOn: exc ? exc.updatedOn || null : null, applied: m.excepted.length,
+            entries: m.excRows.map((r) => ({ org: r.org, app: r.app, entry: r.entry, status: r.status, reason: r.reason, reviewedBy: r.reviewedBy, reviewedOn: r.reviewedOn })),
+          },
+          apps: m.apps.map((a) => ({ app: a.app, branch: a.branch || null, scannedAt: a.scannedAt, exceptions: a.exceptions, totals: pick(a) })),
+          totals: { ...pick(m.totals), apps: m.totals.apps, exceptions: m.excepted.length },
+          items: m.items,
+          findings: m.findings.map(back),
+          exceptions: m.excepted.map((f) => ({ ...back(f), exception: f.exception })),
+        };
+        download(JSON.stringify(report, null, 2) + '\n', `${orgName()}_consolidated_${today()}.json`, 'application/json');
       });
     })();
   </script>
