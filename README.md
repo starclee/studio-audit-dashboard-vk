@@ -92,10 +92,14 @@ always reported.
 
 - **Export findings CSV**: the findings currently filtered (`status` = `open`), followed by the
   reviewed exceptions (`status` = `reviewed exception`, with reason, reviewer and date).
-- **Export consolidated report**: one JSON file, `<org>_consolidated_<date>.json`, combining all
-  loaded reports with the exceptions applied. Its `findings` are the open findings only; the
-  reviewed entries are listed under `exceptions`, and the file used is under `configExceptions`.
-  Use it for validation and sign-off. Loading it back into the dashboard shows the same numbers.
+- **Export consolidated report**: one CSV file, `<org>_consolidated_<date>.csv`, for validation
+  and sign-off. It covers all loaded reports and ignores the table filters. There is one row per
+  finding: open findings first (HIGH first), then the reviewed exceptions. Columns:
+  `org, app, branch, scannedAt, status, severity, kind, type, name, handler, line, item,
+  maskedValue, reason, location, snippet, exceptionReason, reviewedBy, reviewedOn, exceptionNote`.
+  `status` is `open` or `reviewed exception`. `exceptionNote` gives the exception's status, such as
+  `Applied`, `Applied, review overdue (10 days)`, or why an exception in the file was **not**
+  applied (that finding stays `open`).
 
 ## Report checks
 

@@ -1406,29 +1406,28 @@
         download('﻿' + [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n'), `${orgName()}_findings.csv`, 'text/csv');
       });
 
-      // ---------------------------------------------------------------- consolidated report JSON (all loaded files, exceptions applied)
+      // ---------------------------------------------------------------- consolidated report CSV (all loaded files, no filters, exceptions applied)
+      // one row per finding: open findings first (by severity), then the reviewed exceptions
       $('export-json').addEventListener('click', () => {
         const m = model;
-        const back = (f) => ({ org: f.org, app: f.app, type: f.type, functionName: f.name, line: f.line, column: f.column ?? 0, item: f.item, location: f.location,
-          maskedValue: f.maskedValue, reason: f.reason, severity: f.severity, codeSnippet: f.snippet, ...(f.handler ? { handler: f.handler } : {}) });
-        const pick = (t) => ({ items: t.items, scanned: t.scanned, empty: t.empty, errors: t.errors, withFindings: t.withFindings, HIGH: t.HIGH, MEDIUM: t.MEDIUM, LOW: t.LOW });
-        const report = {
-          org: m.orgs.join(', '),
-          types: [...new Set(m.items.map((i) => i.type || 'function'))],
-          scannedAt: m.dates[m.dates.length - 1] || '',
-          consolidatedAt: new Date().toISOString(),
-          sourceFiles: m.fileNames,
-          configExceptions: {
-            file: exc ? exc.fileName : null, updatedOn: exc ? exc.updatedOn || null : null, applied: m.excepted.length,
-            entries: m.excRows.map((r) => ({ org: r.org, app: r.app, entry: r.entry, status: r.status, reason: r.reason, reviewedBy: r.reviewedBy, reviewedOn: r.reviewedOn })),
-          },
-          apps: m.apps.map((a) => ({ app: a.app, branch: a.branch || null, scannedAt: a.scannedAt, exceptions: a.exceptions, totals: pick(a) })),
-          totals: { ...pick(m.totals), apps: m.totals.apps, exceptions: m.excepted.length },
-          items: m.items,
-          findings: m.findings.map(back),
-          exceptions: m.excepted.map((f) => ({ ...back(f), exception: f.exception })),
-        };
-        download(JSON.stringify(report, null, 2) + '\n', `${orgName()}_consolidated_${today()}.json`, 'application/json');
+        const cols = ['org', 'app', 'branch', 'scannedAt', 'status', 'severity', 'kind', 'type', 'name', 'handler', 'line', 'item', 'maskedValue', 'reason', 'location', 'snippet',
+          'exceptionReason', 'reviewedBy', 'reviewedOn', 'exceptionNote'];
+        const esc = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+        const appOf = new Map(m.apps.map((a) => [a.app, a]));
+        const excOf = new Map(m.excRows.map((r) => [normKey(r.org) + '|' + normKey(r.app) + '|' + r.entry, r]));
+        const base = (f) => ({ ...f, branch: appOf.get(f.app)?.branch || '', scannedAt: appOf.get(f.app)?.scannedAt || '' });
+        const rows = [
+          // an open config finding whose exception was refused says why, so reviewers can check it
+          ...sortRows(m.findings, { k: 'severity', dir: 1 }).map((f) => {
+            const x = f.type === 'configuration' ? excOf.get(normKey(f.org) + '|' + normKey(f.app) + '|' + f.item) : null;
+            return { ...base(f), status: 'open', exceptionReason: x?.reason, reviewedBy: x?.reviewedBy, reviewedOn: x?.reviewedOn, exceptionNote: x?.status };
+          }),
+          ...sortRows(m.excepted, { k: 'app', dir: 1 }).map((f) => {
+            const x = excOf.get(normKey(f.org) + '|' + normKey(f.app) + '|' + f.item);
+            return { ...base(f), status: 'reviewed exception', exceptionReason: f.exception.reason, reviewedBy: f.exception.reviewedBy, reviewedOn: f.exception.reviewedOn, exceptionNote: x?.status || 'Applied' };
+          }),
+        ];
+        download('﻿' + [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n') + '\r\n', `${orgName()}_consolidated_${today()}.csv`, 'text/csv');
       });
     })();
   </script>
