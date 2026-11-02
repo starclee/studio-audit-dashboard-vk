@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Studio Audit Dashboard</title>
+<style>
+/* Layout: one column of cards; summary first, then charts, then sortable tables. Works offline, no external files. */
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --fg: #1b1f27; --muted: #5d6573; --line: #dfe3ea; --hover: #eef1f6;
+  --accent: #2f5bd3; --high: #c62f3b; --medium: #c27a12; --low: #8b93a3; --ok: #1f8a5b;
+  --high-bg: #fbeaec; --medium-bg: #fbf1e1; --ok-bg: #e6f4ed;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2c323d; --hover: #232935;
+    --accent: #7c9cf5; --high: #f0646e; --medium: #e5a443; --low: #7d8596; --ok: #4cc28a;
+    --high-bg: #3a1f23; --medium-bg: #36291a; --ok-bg: #173126; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2c323d; --hover: #232935;
+  --accent: #7c9cf5; --high: #f0646e; --medium: #e5a443; --low: #7d8596; --ok: #4cc28a;
+  --high-bg: #3a1f23; --medium-bg: #36291a; --ok-bg: #173126; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 24px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 20px; }
+h1 { font-size: 1.6rem; font-weight: 650; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-size: 1rem; font-weight: 600; margin: 0; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+code { font-family: var(--mono); font-size: 12px; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.top { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; }
+.top .meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: var(--r); padding: 7px 12px; cursor: pointer; }
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.drop { border: 2px dashed var(--line); border-radius: 12px; background: var(--panel); padding: 40px 20px; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; transition: border-color .15s, background .15s; }
+.drop.over { border-color: var(--accent); background: var(--hover); }
+.drop h2 { font-size: 1.15rem; }
+.drop ul { text-align: left; margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+
+.banner { border-radius: var(--r); padding: 10px 14px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.banner.warn { background: var(--medium-bg); border: 1px solid var(--medium); }
+.banner.err { background: var(--high-bg); border: 1px solid var(--high); }
+
+.take { font-size: 15px; max-width: 80ch; }
+.take b { font-weight: 650; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; border-left: 4px solid var(--stripe, var(--line)); }
+.tile.high { --stripe: var(--high); } .tile.medium { --stripe: var(--medium); } .tile.low { --stripe: var(--low); } .tile.ok { --stripe: var(--ok); }
+.tile .lbl { font-size: 12px; color: var(--muted); }
+.tile .big { font-size: 1.9rem; font-weight: 600; line-height: 1.15; }
+.tile .sub { font-size: 12px; color: var(--muted); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 12px; align-items: start; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.card.full { grid-column: 1 / -1; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .row { cursor: pointer; }
+.chart .row:hover .hit { fill: var(--hover); }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); box-shadow: 0 6px 20px rgba(0,0,0,.15); padding: 6px 10px; font-size: 12px; white-space: nowrap; z-index: 5; }
+.tip .t { color: var(--muted); margin-bottom: 2px; }
+.tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+
+.hbars { display: flex; flex-direction: column; gap: 8px; }
+.hbar { display: grid; grid-template-columns: minmax(6rem, 9rem) 1fr 3rem; gap: 10px; align-items: center; font-size: 13px; }
+.hbar .track { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: var(--hover); }
+.hbar .track span { height: 100%; }
+.hbar .n { text-align: right; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+.stats div { display: flex; flex-direction: column; }
+.stats b { font-size: 1.3rem; font-weight: 600; }
+.meter { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--hover); }
+.meter span { height: 100%; }
+
+.tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tools input[type=search], .tools select { border: 1px solid var(--line); background: var(--bg); border-radius: var(--r); padding: 6px 10px; min-width: 0; }
+.tools input[type=search] { flex: 1 1 200px; }
+.tools select { max-width: 100%; }
+.chip { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 4px 11px; cursor: pointer; font-size: 13px; }
+.chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.count { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+.scroll { max-height: 560px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 600; border-bottom: 1px solid var(--line); padding: 0; z-index: 1; }
+th button { width: 100%; text-align: inherit; background: none; border: 0; padding: 8px 10px; cursor: pointer; color: var(--muted); white-space: nowrap; }
+th[aria-sort="ascending"] button::after { content: " ↑"; }
+th[aria-sort="descending"] button::after { content: " ↓"; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.num { text-align: right; }
+th.num button { text-align: right; }
+tr.click { cursor: pointer; }
+tbody tr:hover td { background: var(--hover); }
+.zero { color: var(--muted); opacity: .6; }
+.hot { color: var(--high); font-weight: 650; }
+.sev { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .03em; }
+.sev.HIGH { background: var(--high-bg); color: var(--high); }
+.sev.MEDIUM { background: var(--medium-bg); color: var(--medium); }
+.sev.LOW { background: var(--hover); color: var(--muted); }
+.snip { color: var(--muted); word-break: break-all; display: block; max-width: 52ch; }
+.status { font-size: 12px; font-weight: 600; }
+.status.error { color: var(--high); } .status.empty { color: var(--medium); }
+.files { font-size: 12px; color: var(--muted); }
+@media (max-width: 700px) { .wide-only { display: none; } }
+@media (prefers-reduced-motion: no-preference) { .tile, .card { animation: rise .25s ease-out both; } @keyframes rise { from { transform: translateY(4px); opacity: .6; } } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="meta">
+      <h1 id="title">Studio Audit Dashboard</h1>
+      <p class="muted small" id="subtitle">Hardcoded-secret audit results from the Autonom8 studio scanner.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" id="theme" type="button" title="Switch light / dark">Theme</button>
+      <button class="btn" id="export" type="button" hidden>Export findings CSV</button>
+      <button class="btn primary" id="pick" type="button">Load report JSON</button>
+      <input id="file" type="file" accept=".json,application/json" multiple hidden>
+    </div>
+  </div>
+
+  <section class="drop" id="drop">
+    <h2>Drop scan report JSON files here</h2>
+    <p class="muted">or <button class="btn primary" id="pick2" type="button">choose files</button></p>
+    <ul>
+      <li>Org report: <code>&lt;org&gt;_ALL-APPS_all_ALL.json</code></li>
+      <li>App report: <code>&lt;org&gt;_&lt;app&gt;_&lt;type&gt;_ALL.json</code></li>
+      <li>Single item: <code>&lt;org&gt;_&lt;app&gt;_&lt;type&gt;_&lt;name&gt;.json</code></li>
+    </ul>
+    <p class="muted small">Pick several files to combine them; for each app, the newest scan of each item type (function, service, form, configuration) wins. Files stay in your browser and are not uploaded anywhere.</p>
+  </section>
+
+  <div id="banners"></div>
+
+  <main id="dash" hidden style="display:flex; flex-direction:column; gap:20px;">
+    <p class="take" id="take"></p>
+    <section class="tiles" id="tiles"></section>
+
+    <div class="grid">
+      <section class="card full" id="by-app">
+        <h2>Findings by app</h2>
+        <p class="muted small">Apps with at least one finding, most HIGH first. Click a bar to list that app's findings.</p>
+        <div class="legend"><span><i style="background:var(--high)"></i>HIGH</span><span><i style="background:var(--medium)"></i>MEDIUM</span><span><i style="background:var(--low)"></i>LOW</span></div>
+        <div class="chart" id="app-chart"></div>
+      </section>
+
+      <section class="card" id="risks">
+        <h2>By kind of risk</h2>
+        <p class="muted small">Hardcoded secrets, direct API calls in code that runs in the browser (Client-mode functions, forms), and configuration made available for client.</p>
+        <div class="hbars" id="kind-chart"></div>
+      </section>
+
+      <section class="card" id="kinds">
+        <h2>By item type</h2>
+        <p class="muted small">Findings in functions, services, forms and the Configuration tab.</p>
+        <div class="hbars" id="type-chart"></div>
+      </section>
+
+      <section class="card" id="where">
+        <h2>Where the findings sit</h2>
+        <p class="muted small">Commented-out code still ships in the source and its history.</p>
+        <div class="hbars" id="loc-chart"></div>
+      </section>
+
+      <section class="card" id="coverage">
+        <h2>Scan coverage</h2>
+        <p class="muted small">Items that could not be read were not checked for secrets.</p>
+        <div class="meter" id="cov-meter"></div>
+        <div class="stats" id="cov-stats"></div>
+      </section>
+
+      <section class="card" id="keys">
+        <h2>Most common keys</h2>
+        <p class="muted small">Variable, header or field names holding the flagged values.</p>
+        <div class="hbars" id="key-chart"></div>
+      </section>
+    </div>
+
+    <section class="card" id="findings">
+      <h2>Findings</h2>
+      <p class="muted small">Values are masked by the scanner. Line numbers point into the item's code in the studio editor; for forms, into the handler named under the form.</p>
+      <div class="tools">
+        <button class="chip" type="button" data-sev="" aria-pressed="true">All</button>
+        <button class="chip" type="button" data-sev="HIGH" aria-pressed="false">HIGH</button>
+        <button class="chip" type="button" data-sev="MEDIUM" aria-pressed="false">MEDIUM</button>
+        <button class="chip" type="button" data-sev="LOW" aria-pressed="false">LOW</button>
+        <select id="f-app" aria-label="App"></select>
+        <select id="f-kind" aria-label="Kind of risk"></select>
+        <select id="f-loc" aria-label="Location"></select>
+        <input id="f-q" type="search" placeholder="Search name, key, reason…" aria-label="Search findings">
+        <button class="btn" id="f-clear" type="button" hidden>Clear filters</button>
+        <span class="count" id="f-count"></span>
+      </div>
+      <div class="scroll">
+        <table id="f-table">
+          <thead><tr>
+            <th data-k="severity"><button type="button">Severity</button></th>
+            <th data-k="app"><button type="button">App</button></th>
+            <th data-k="type" class="wide-only"><button type="button">Type</button></th>
+            <th data-k="name"><button type="button">Item</button></th>
+            <th data-k="line" class="num"><button type="button">Line</button></th>
+            <th data-k="item"><button type="button">Key</button></th>
+            <th data-k="maskedValue"><button type="button">Value</button></th>
+            <th data-k="reason" class="wide-only"><button type="button">Reason</button></th>
+            <th data-k="location" class="wide-only"><button type="button">Where</button></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="apps">
+      <h2>All apps</h2>
+      <p class="muted small">Every app in the loaded reports. Click a row with findings to list them.</p>
+      <div class="tools"><input id="a-q" type="search" placeholder="Search apps…" aria-label="Search apps"><span class="count" id="a-count"></span></div>
+      <div class="scroll">
+        <table id="a-table">
+          <thead><tr>
+            <th data-k="app"><button type="button">App</button></th>
+            <th data-k="HIGH" class="num"><button type="button">HIGH</button></th>
+            <th data-k="MEDIUM" class="num"><button type="button">MEDIUM</button></th>
+            <th data-k="LOW" class="num"><button type="button">LOW</button></th>
+            <th data-k="withFindings" class="num"><button type="button">Items hit</button></th>
+            <th data-k="items" class="num"><button type="button">Items</button></th>
+            <th data-k="scanned" class="num wide-only"><button type="button">Scanned</button></th>
+            <th data-k="empty" class="num wide-only"><button type="button">Empty</button></th>
+            <th data-k="errors" class="num wide-only"><button type="button">Errors</button></th>
+            <th data-k="branch" class="wide-only"><button type="button">Branch</button></th>
+            <th data-k="scannedAt" class="wide-only"><button type="button">Scanned at</button></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="unscanned">
+      <h2>Not scanned</h2>
+      <p class="muted small">Lists that did not open and items whose code stayed empty after reopening.</p>
+      <div class="scroll" style="max-height:360px">
+        <table id="u-table">
+          <thead><tr>
+            <th data-k="app"><button type="button">App</button></th>
+            <th data-k="type"><button type="button">Type</button></th>
+            <th data-k="name"><button type="button">Name</button></th>
+            <th data-k="status"><button type="button">Status</button></th>
+            <th data-k="error" class="wide-only"><button type="button">Reason</button></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const SEV = ['HIGH', 'MEDIUM', 'LOW'];
+  const SEV_COLOR = { HIGH: 'var(--high)', MEDIUM: 'var(--medium)', LOW: 'var(--low)' };
+  const SEV_RANK = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+  const NUMERIC = ['HIGH', 'MEDIUM', 'LOW', 'withFindings', 'items', 'scanned', 'empty', 'errors', 'line'];
+  const nf = new Intl.NumberFormat('en');
+  const fmt = (n) => nf.format(n);
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const SVG = 'http://www.w3.org/2000/svg';
+  const svgEl = (tag, attrs) => { const e = document.createElementNS(SVG, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+
+  let model = null;
+  // kind of risk, from the finding's type / reason
+  const KIND = { secret: 'Hardcoded secret', api: 'API call in browser code', config: 'Config available for client' };
+  const kindOf = (f) => (f.type === 'configuration' ? KIND.config : /^direct API call/i.test(f.reason || '') ? KIND.api : KIND.secret);
+  const state = { sev: '', app: '', kind: '', loc: '', q: '', aq: '', fSort: { k: 'severity', dir: 1 }, aSort: { k: 'HIGH', dir: -1 }, uSort: { k: 'app', dir: 1 } };
+
+  // ---------------------------------------------------------------- theme
+  $('theme').addEventListener('click', () => {
+    const root = document.documentElement;
+    const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark ? 'light' : 'dark';
+    try { localStorage.setItem('ss-theme', root.dataset.theme); } catch (e) { /* storage blocked */ }
+  });
+  try { const t = localStorage.getItem('ss-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* storage blocked */ }
+
+  // ---------------------------------------------------------------- loading
+  const fileInput = $('file');
+  [$('pick'), $('pick2')].forEach((b) => b.addEventListener('click', () => fileInput.click()));
+  fileInput.addEventListener('change', () => { load([...fileInput.files]); fileInput.value = ''; });
+  const drop = $('drop');
+  ['dragenter', 'dragover'].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === 'drop' || e.target === drop) drop.classList.remove('over'); }));
+  document.addEventListener('drop', (e) => { const fs = [...(e.dataTransfer?.files || [])].filter((f) => /\.json$/i.test(f.name) || f.type === 'application/json'); if (fs.length) load(fs); });
+
+  async function load(files) {
+    if (!files.length) return;
+    const parsed = [], problems = [];
+    for (const f of files) {
+      try { parsed.push({ name: f.name, json: JSON.parse(await f.text()) }); }
+      catch (e) { problems.push(`${f.name}: not valid JSON (${e.message})`); }
+    }
+    const units = [], notes = [];
+    for (const p of parsed) {
+      try { units.push(...normalize(p.json, p.name, notes)); }
+      catch (e) { problems.push(`${p.name}: ${e.message}`); }
+    }
+    if (!units.length) { showBanners(problems, notes); return; }
+    model = buildModel(units, parsed.map((p) => p.name));
+    Object.assign(state, { sev: '', app: '', kind: '', loc: '', q: '', aq: '' });
+    $('f-q').value = ''; $('a-q').value = '';
+    showBanners(problems, notes);
+    render();
+  }
+
+  // Turns any report shape into per-app units: { app, org, branch, scannedAt, items[], findings[] }
+  function normalize(j, fileName, notes) {
+    if (!j || typeof j !== 'object') throw new Error('not a scan report');
+    const org = j.org || j.target?.org || '';
+    const scannedAt = j.scannedAt || '';
+    // single item report
+    if (!Array.isArray(j.items) && Array.isArray(j.findings) && j.target) {
+      const t = j.target, counts = countSev(j.findings);
+      return [{ app: t.app || '(unknown app)', org, branch: j.branch ?? null, scannedAt, file: fileName,
+        items: [{ app: t.app, type: t.type || 'function', name: t.functionName, status: 'scanned', counts }],
+        findings: j.findings.map((f) => ({ ...f, app: f.app || t.app })) }];
+    }
+    if (!Array.isArray(j.items) || !Array.isArray(j.findings)) throw new Error('missing "items" or "findings" — not a studio-audit report');
+
+    // app report
+    if (j.app && !Array.isArray(j.apps)) {
+      const items = j.items.map((i) => ({ ...i, app: i.app || j.app }));
+      checkTotals(j.totals, items, j.findings, `${fileName}`, notes);
+      return [{ app: j.app, org, branch: j.branch ?? null, scannedAt, file: fileName, items, findings: j.findings.map((f) => ({ ...f, app: f.app || j.app })) }];
+    }
+
+    // org report: items may lack "app" (older merged runs) -> infer per contiguous run from findings
+    const items = j.items.map((i) => ({ ...i }));
+    const findingApps = new Map(); // "type|name" -> Set(app)
+    for (const f of j.findings) {
+      const k = `${f.type}|${f.functionName}`;
+      if (!findingApps.has(k)) findingApps.set(k, new Set());
+      findingApps.get(k).add(f.app);
+    }
+    const labelled = new Set(items.filter((i) => i.app).map((i) => i.app));
+    let inferred = 0, unknown = 0;
+    for (let s = 0; s < items.length;) {
+      if (items[s].app) { s++; continue; }
+      let e = s; while (e < items.length && !items[e].app) e++;
+      const votes = new Map();
+      for (let i = s; i < e; i++) {
+        const it = items[i];
+        if (!(it.counts && SEV.some((x) => it.counts[x] > 0))) continue;
+        for (const a of findingApps.get(`${it.type}|${it.name}`) || []) if (!labelled.has(a)) votes.set(a, (votes.get(a) || 0) + 1);
+      }
+      const best = [...votes].sort((a, b) => b[1] - a[1])[0]?.[0];
+      for (let i = s; i < e; i++) items[i].app = best || '(unknown app)';
+      if (best) { inferred += e - s; labelled.add(best); } else unknown += e - s;
+      s = e;
+    }
+    if (inferred) notes.push(`${fileName}: ${fmt(inferred)} item(s) had no app name; their app was worked out from the matching findings.`);
+    if (unknown) notes.push(`${fileName}: ${fmt(unknown)} item(s) have no app name and are shown under "(unknown app)".`);
+    checkTotals(j.totals, items, j.findings, fileName, notes);
+    if (Array.isArray(j.apps)) {
+      const listed = new Set(j.apps.map((a) => a.app));
+      const missing = [...new Set(items.map((i) => i.app))].filter((a) => !listed.has(a) && a !== '(unknown app)');
+      if (missing.length) notes.push(`${fileName}: ${missing.length} app(s) have details but no row in the file's app list (${missing.join(', ')}). They are included here.`);
+    }
+    const branchOf = new Map((j.apps || []).map((a) => [a.app, a.branch ?? null]));
+    const byApp = new Map();
+    for (const it of items) {
+      if (!byApp.has(it.app)) byApp.set(it.app, { app: it.app, org, branch: branchOf.get(it.app) ?? null, scannedAt, file: fileName, items: [], findings: [] });
+      byApp.get(it.app).items.push(it);
+    }
+    for (const f of j.findings) {
+      if (!byApp.has(f.app)) byApp.set(f.app, { app: f.app, org, branch: branchOf.get(f.app) ?? null, scannedAt, file: fileName, items: [], findings: [] });
+      byApp.get(f.app).findings.push(f);
+    }
+    return [...byApp.values()];
+  }
+
+  function countSev(fs) { const c = { HIGH: 0, MEDIUM: 0, LOW: 0 }; for (const f of fs) if (c[f.severity] != null) c[f.severity]++; return c; }
+  function totalsOf(items, findings) {
+    const t = { items: items.length, scanned: 0, empty: 0, errors: 0, withFindings: 0, ...countSev(findings) };
+    for (const i of items) {
+      if (i.status === 'scanned') t.scanned++; else if (i.status === 'empty') t.empty++; else if (i.status === 'error') t.errors++;
+      if (i.counts && SEV.some((s) => i.counts[s] > 0)) t.withFindings++;
+    }
+    return t;
+  }
+  function checkTotals(stated, items, findings, fileName, notes) {
+    if (!stated) return;
+    const real = totalsOf(items, findings);
+    const diff = Object.keys(real).filter((k) => stated[k] != null && stated[k] !== real[k]);
+    if (diff.length) notes.push(`${fileName}: the totals written in the file do not match its details (${diff.map((k) => `${k} ${fmt(stated[k])} → ${fmt(real[k])}`).join(', ')}). The dashboard uses the counts worked out from the details.`);
+  }
+
+  function buildModel(units, fileNames) {
+    // newest scan of each app AND item type wins (an "audit form" file and an "audit config" file of the same app add up)
+    const latest = new Map(); // app -> Map(type -> unit)
+    for (const u of units) {
+      const types = new Set([...u.items.map((i) => i.type || 'function'), ...u.findings.map((f) => f.type || 'function')]);
+      if (!latest.has(u.app)) latest.set(u.app, new Map());
+      for (const t of types) {
+        const prev = latest.get(u.app).get(t);
+        if (!prev || String(u.scannedAt) > String(prev.scannedAt)) latest.get(u.app).set(t, u);
+      }
+    }
+    const byApp = new Map();
+    for (const [app, perType] of latest) {
+      const picked = [...perType];
+      const newest = picked.map(([, u]) => u).sort((a, b) => String(b.scannedAt).localeCompare(String(a.scannedAt)))[0];
+      byApp.set(app, {
+        ...newest,
+        branch: newest.branch ?? picked.map(([, u]) => u.branch).find(Boolean) ?? null,
+        items: picked.flatMap(([t, u]) => u.items.filter((i) => (i.type || 'function') === t)),
+        findings: picked.flatMap(([t, u]) => u.findings.filter((f) => (f.type || 'function') === t)),
+      });
+    }
+    const apps = [...byApp.values()].map((u) => ({ app: u.app, branch: u.branch || '', scannedAt: u.scannedAt, org: u.org, file: u.file, ...totalsOf(u.items, u.findings) }));
+    const items = [...byApp.values()].flatMap((u) => u.items);
+    const findings = [...byApp.values()].flatMap((u) => u.findings).map((f) => ({
+      app: f.app, type: f.type || 'function', name: f.functionName ?? f.name ?? '', line: Number(f.line) || 0, column: f.column,
+      item: f.item ?? '', location: f.location || 'code', severity: f.severity, reason: f.reason ?? '', maskedValue: f.maskedValue ?? '', snippet: f.codeSnippet ?? '',
+      handler: f.handler ?? '', kind: kindOf(f),
+    }));
+    const unscanned = items.filter((i) => i.status !== 'scanned').map((i) => ({ app: i.app, type: i.type, name: i.name, status: i.status, error: String(i.error || '').split('\n')[0] }));
+    const totals = { apps: apps.length, appsWithFindings: apps.filter((a) => a.HIGH + a.MEDIUM + a.LOW > 0).length, ...totalsOf(items, findings) };
+    const orgs = [...new Set(apps.map((a) => a.org).filter(Boolean))];
+    const dates = apps.map((a) => a.scannedAt).filter(Boolean).sort();
+    return { apps, items, findings, unscanned, totals, orgs, dates, fileNames };
+  }
+
+  function showBanners(problems, notes) {
+    const box = $('banners'); box.replaceChildren();
+    if (problems.length) { const b = el('div', 'banner err'); b.append(el('b', null, 'Some files could not be read')); problems.forEach((p) => b.append(el('span', null, p))); box.append(b); }
+    if (notes.length) { const b = el('div', 'banner warn'); b.append(el('b', null, 'Report checks')); notes.forEach((p) => b.append(el('span', null, p))); box.append(b); }
+  }
+
+  // ---------------------------------------------------------------- render
+  function render() {
+    const m = model, t = m.totals;
+    $('dash').hidden = false; $('export').hidden = false;
+    $('drop').hidden = true;
+    $('title').textContent = (m.orgs.length === 1 ? m.orgs[0].replace(/_/g, ' ') + ' — ' : '') + 'studio audit';
+    document.title = (m.orgs[0] ? m.orgs[0].replace(/_/g, ' ') + ' studio audit' : 'Studio Audit Dashboard');
+    const d0 = m.dates[0], d1 = m.dates[m.dates.length - 1];
+    const fd = (s) => { const d = new Date(s); return isNaN(d) ? s : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); };
+    $('subtitle').textContent = `${m.fileNames.length} file(s) loaded · ${d0 ? (d0 === d1 ? 'scanned ' + fd(d0) : `scanned ${fd(d0)} – ${fd(d1)}`) : 'scan time unknown'}`;
+
+    const take = $('take'); take.replaceChildren();
+    const b = (n) => el('b', null, fmt(n));
+    if (t.HIGH) {
+      const high = m.findings.filter((f) => f.severity === 'HIGH');
+      const n = (k) => high.filter((f) => f.kind === k).length;
+      take.append(b(t.HIGH), ' HIGH-severity findings in ', b(t.appsWithFindings), ' of ', b(t.apps), ' apps.');
+      if (n(KIND.secret)) take.append(' ', b(n(KIND.secret)), ' hardcoded secrets: move each into ', el('code', null, 'a8config.getConfig()'), ' and rotate the credential.');
+      if (n(KIND.api)) take.append(' ', b(n(KIND.api)), ' direct API calls in browser code (Client-mode functions, forms): use a platform SDK call or a Server-mode function.');
+      if (n(KIND.config)) take.append(' ', b(n(KIND.config)), ' configuration entries made available for client: turn the toggle off.');
+    } else take.append('No HIGH-severity findings across ', b(t.apps), ' apps.');
+    if (t.empty + t.errors) take.append(' ', b(t.empty + t.errors), ' items could not be read and are unchecked.');
+
+    const tiles = $('tiles'); tiles.replaceChildren();
+    const tile = (cls, lbl, n, sub) => { const d = el('div', 'tile ' + cls); d.append(el('span', 'lbl', lbl), el('span', 'big', fmt(n)), el('span', 'sub', sub)); tiles.append(d); };
+    tile('high', 'HIGH findings', t.HIGH, 'Secrets, browser API calls, client config');
+    tile('medium', 'MEDIUM findings', t.MEDIUM, 'Likely keys, high entropy');
+    tile('low', 'LOW findings', t.LOW, 'Tracking cookies');
+    tile('', 'Items with findings', t.withFindings, `in ${fmt(t.appsWithFindings)} app(s)`);
+    tile('ok', 'Items scanned', t.scanned, `of ${fmt(t.items)} in ${fmt(t.apps)} app(s)`);
+    tile('', 'Not scanned', t.empty + t.errors, `${fmt(t.errors)} errors, ${fmt(t.empty)} empty code`);
+
+    drawAppChart();
+    drawGroupBars($('kind-chart'), groupBy(m.findings, 'kind'));
+    drawGroupBars($('loc-chart'), groupBy(m.findings, 'location'));
+    drawGroupBars($('type-chart'), groupBy(m.findings, 'type'));
+    drawGroupBars($('key-chart'), groupBy(m.findings, 'item').slice(0, 8));
+    drawCoverage();
+    fillSelect($('f-app'), 'All apps', [...new Set(m.findings.map((f) => f.app))].sort((a, b) => a.localeCompare(b)));
+    fillSelect($('f-kind'), 'Any kind', Object.values(KIND).filter((k) => m.findings.some((f) => f.kind === k)));
+    fillSelect($('f-loc'), 'Anywhere', [...new Set(m.findings.map((f) => f.location))].sort());
+    drawFindings(); drawApps(); drawUnscanned();
+  }
+
+  function fillSelect(sel, all, values) { sel.replaceChildren(new Option(all, ''), ...values.map((v) => new Option(v, v))); }
+
+  function groupBy(fs, key) {
+    const m = new Map();
+    for (const f of fs) { const k = f[key] || '(none)'; const r = m.get(k) || { label: k, HIGH: 0, MEDIUM: 0, LOW: 0, total: 0 }; r[f.severity]++; r.total++; m.set(k, r); }
+    return [...m.values()].sort((a, b) => b.total - a.total || b.HIGH - a.HIGH);
+  }
+  function drawGroupBars(box, rows) {
+    box.replaceChildren();
+    if (!rows.length) { box.append(el('p', 'muted small', 'No findings.')); return; }
+    const max = Math.max(...rows.map((r) => r.total));
+    for (const r of rows) {
+      const row = el('div', 'hbar'); const name = el('span', null, r.label); name.title = r.label; name.style.overflow = 'hidden'; name.style.textOverflow = 'ellipsis'; name.style.whiteSpace = 'nowrap';
+      const track = el('div', 'track');
+      for (const s of SEV) if (r[s]) { const sp = el('span'); sp.style.width = (r[s] / max * 100) + '%'; sp.style.background = SEV_COLOR[s]; sp.title = `${s}: ${fmt(r[s])}`; track.append(sp); }
+      row.append(name, track, el('span', 'n', fmt(r.total))); box.append(row);
+    }
+  }
+  function drawCoverage() {
+    const t = model.totals, clean = t.scanned - t.withFindings;
+    const parts = [['Clean', clean, 'var(--ok)'], ['With findings', t.withFindings, 'var(--high)'], ['Empty code', t.empty, 'var(--medium)'], ['Errors', t.errors, 'var(--low)']];
+    const meter = $('cov-meter'); meter.replaceChildren();
+    for (const [l, n, c] of parts) if (n) { const s = el('span'); s.style.width = (n / t.items * 100) + '%'; s.style.background = c; s.title = `${l}: ${fmt(n)}`; meter.append(s); }
+    const stats = $('cov-stats'); stats.replaceChildren();
+    for (const [l, n, c] of parts) { const d = el('div'); const lb = el('span', 'small muted'); const dot = el('i'); dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:${c}`; lb.append(dot, l); d.append(lb, el('b', null, fmt(n)), el('span', 'small muted', t.items ? (n / t.items * 100).toFixed(1) + '%' : '')); stats.append(d); }
+  }
+
+  // ---------------------------------------------------------------- app chart (SVG, hand-drawn)
+  const chartBox = $('app-chart');
+  const tip = el('div', 'tip'); tip.hidden = true;
+  function drawAppChart() {
+    const rows = model.apps.filter((a) => a.HIGH + a.MEDIUM + a.LOW > 0)
+      .sort((a, b) => b.HIGH - a.HIGH || (b.HIGH + b.MEDIUM + b.LOW) - (a.HIGH + a.MEDIUM + a.LOW) || a.app.localeCompare(b.app));
+    chartBox.replaceChildren();
+    if (!rows.length) { chartBox.append(el('p', 'muted small', 'No app has findings.')); return; }
+    const W = Math.max(320, chartBox.clientWidth || 800), rowH = 24, top = 22, H = top + rows.length * rowH + 4;
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Findings per app by severity' });
+    chartBox.append(svg);
+    // measure the longest label
+    const probe = svgEl('text', { 'font-size': 12 }); svg.append(probe);
+    let lw = 0; for (const r of rows) { probe.textContent = r.app; lw = Math.max(lw, probe.getComputedTextLength()); }
+    probe.remove();
+    const narrow = W < 560, left = Math.min(lw + 14, narrow ? W * 0.42 : 280), right = 44;
+    const max = Math.max(...rows.map((r) => r.HIGH + r.MEDIUM + r.LOW));
+    const step = niceStep(max, narrow ? 4 : 8), domain = Math.ceil(max / step) * step;
+    const x = (v) => left + (v / domain) * (W - left - right);
+    for (let v = 0; v <= domain; v += step) {
+      svg.append(svgEl('line', { x1: x(v), x2: x(v), y1: top - 4, y2: H, stroke: 'var(--line)' }));
+      const tx = svgEl('text', { x: x(v), y: top - 9, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }); tx.textContent = fmt(v); svg.append(tx);
+    }
+    rows.forEach((r, i) => {
+      const y = top + i * rowH, bh = 15, by = y + (rowH - bh) / 2;
+      const g = svgEl('g', { class: 'row', tabindex: 0, role: 'button', 'aria-label': `${r.app}: ${r.HIGH} HIGH, ${r.MEDIUM} MEDIUM, ${r.LOW} LOW` });
+      g.append(svgEl('rect', { class: 'hit', x: 0, y, width: W, height: rowH, fill: 'transparent', rx: 4 }));
+      const lab = svgEl('text', { x: left - 8, y: y + rowH / 2, dy: '0.35em', 'text-anchor': 'end', 'font-size': 12, fill: r.app === state.app ? 'var(--fg)' : 'var(--muted)', 'font-weight': r.app === state.app ? 650 : 400 });
+      lab.textContent = r.app; g.append(lab);
+      let s = r.app; while (lab.getComputedTextLength() > left - 14 && s.length > 4) { s = s.slice(0, -2); lab.textContent = s + '…'; }
+      let acc = 0;
+      for (const sv of SEV) if (r[sv]) {
+        g.append(svgEl('rect', { x: x(acc), y: by, width: Math.max(1.5, x(acc + r[sv]) - x(acc)), height: bh, fill: SEV_COLOR[sv], opacity: state.app && state.app !== r.app ? 0.3 : 1 }));
+        acc += r[sv];
+      }
+      const n = svgEl('text', { x: x(acc) + 6, y: y + rowH / 2, dy: '0.35em', 'font-size': 11, fill: 'var(--muted)' }); n.textContent = fmt(acc); g.append(n);
+      g.addEventListener('click', () => pickApp(r.app));
+      g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickApp(r.app); } });
+      g.addEventListener('mousemove', (e) => showTip(e, r));
+      g.addEventListener('mouseleave', () => { tip.hidden = true; });
+      svg.append(g);
+    });
+    chartBox.append(tip);
+  }
+  function niceStep(max, ticks) { const raw = max / ticks, p = Math.pow(10, Math.floor(Math.log10(raw || 1))); const n = raw / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p; }
+  function showTip(e, r) {
+    tip.replaceChildren(el('div', 't', r.app));
+    for (const s of SEV) { const l = el('div'); const i = el('i'); i.style.background = SEV_COLOR[s]; l.append(i, `${s}  ${fmt(r[s])}`); tip.append(l); }
+    tip.append(el('div', 't', `${fmt(r.withFindings)} of ${fmt(r.items)} items hit`));
+    tip.hidden = false;
+    const box = chartBox.getBoundingClientRect(), mx = e.clientX - box.left, my = e.clientY - box.top;
+    tip.style.left = Math.max(0, Math.min(mx + 14, box.width - tip.offsetWidth)) + 'px';
+    tip.style.top = Math.max(0, my - tip.offsetHeight - 10) + 'px';
+  }
+  let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => model && drawAppChart(), 120); });
+
+  // ---------------------------------------------------------------- tables
+  function sortRows(rows, s) {
+    const k = s.k;
+    return rows.slice().sort((a, b) => {
+      let x = a[k], y = b[k];
+      if (k === 'severity') { x = SEV_RANK[x]; y = SEV_RANK[y]; }
+      else if (NUMERIC.includes(k)) { x = Number(x); y = Number(y); }
+      else { x = String(x ?? '').toLowerCase(); y = String(y ?? '').toLowerCase(); }
+      const c = x < y ? -1 : x > y ? 1 : 0;
+      if (c) return c * s.dir;
+      return k === 'severity' ? String(a.app).localeCompare(b.app) || String(a.name).localeCompare(b.name) || a.line - b.line : 0;
+    });
+  }
+  function wireSort(table, key, redraw) {
+    table.querySelectorAll('th[data-k] button').forEach((btn) => btn.addEventListener('click', () => {
+      const k = btn.parentElement.dataset.k, s = state[key];
+      state[key] = { k, dir: s.k === k ? -s.dir : (NUMERIC.includes(k) && k !== 'line' ? -1 : 1) };
+      redraw();
+    }));
+  }
+  function showSort(table, s) {
+    table.querySelectorAll('th[data-k]').forEach((th) => th.dataset.k === s.k ? th.setAttribute('aria-sort', s.dir > 0 ? 'ascending' : 'descending') : th.removeAttribute('aria-sort'));
+  }
+  const td = (tr, text, cls) => { const c = tr.insertCell(); c.textContent = text; if (cls) c.className = cls; return c; };
+
+  const chips = [...document.querySelectorAll('.chip[data-sev]')];
+  function filteredFindings() {
+    const q = state.q.toLowerCase();
+    return model.findings.filter((f) => (!state.sev || f.severity === state.sev) && (!state.app || f.app === state.app) && (!state.kind || f.kind === state.kind) && (!state.loc || f.location === state.loc) &&
+      (!q || [f.app, f.name, f.handler, f.item, f.reason, f.location, f.type, f.kind, f.snippet].some((v) => String(v).toLowerCase().includes(q))));
+  }
+  function drawFindings() {
+    chips.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.sev === state.sev)));
+    $('f-app').value = state.app; $('f-kind').value = state.kind; $('f-loc').value = state.loc;
+    $('f-clear').hidden = !(state.sev || state.app || state.kind || state.loc || state.q);
+    const rows = sortRows(filteredFindings(), state.fSort);
+    showSort($('f-table'), state.fSort);
+    $('f-count').textContent = `${fmt(rows.length)} of ${fmt(model.findings.length)}`;
+    const frag = document.createDocumentFragment();
+    for (const f of rows) {
+      const tr = document.createElement('tr');
+      tr.insertCell().append(el('span', 'sev ' + f.severity, f.severity));
+      td(tr, f.app); td(tr, f.type, 'wide-only');
+      const nm = td(tr, f.name); if (f.handler) nm.append(el('span', 'snip small', f.handler)); // forms: which handler the line is in
+      td(tr, f.line ? fmt(f.line) : '', 'num'); td(tr, f.item);
+      const v = tr.insertCell(); v.append(el('code', null, f.maskedValue)); if (f.snippet) v.append(el('code', 'snip', f.snippet));
+      td(tr, f.reason, 'wide-only'); td(tr, f.location, 'wide-only');
+      frag.append(tr);
+    }
+    if (!rows.length) { const tr = document.createElement('tr'); const c = td(tr, 'No findings match these filters.', 'muted'); c.colSpan = 9; frag.append(tr); }
+    $('f-table').tBodies[0].replaceChildren(frag);
+  }
+  chips.forEach((c) => c.addEventListener('click', () => { state.sev = c.dataset.sev; drawFindings(); }));
+  $('f-app').addEventListener('change', (e) => { state.app = e.target.value; drawFindings(); drawAppChart(); });
+  $('f-kind').addEventListener('change', (e) => { state.kind = e.target.value; drawFindings(); });
+  $('f-loc').addEventListener('change', (e) => { state.loc = e.target.value; drawFindings(); });
+  $('f-q').addEventListener('input', (e) => { state.q = e.target.value; drawFindings(); });
+  $('f-clear').addEventListener('click', () => { Object.assign(state, { sev: '', app: '', kind: '', loc: '', q: '' }); $('f-q').value = ''; drawFindings(); drawAppChart(); });
+  wireSort($('f-table'), 'fSort', drawFindings);
+
+  function pickApp(app) {
+    Object.assign(state, { app, sev: '', kind: '', loc: '' });
+    drawFindings(); drawAppChart();
+    $('findings').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }
+
+  function drawApps() {
+    const q = state.aq.toLowerCase();
+    const rows = sortRows(model.apps.filter((a) => !q || a.app.toLowerCase().includes(q)), state.aSort);
+    showSort($('a-table'), state.aSort);
+    $('a-count').textContent = `${fmt(rows.length)} of ${fmt(model.apps.length)}`;
+    const frag = document.createDocumentFragment();
+    for (const a of rows) {
+      const tr = document.createElement('tr');
+      if (a.HIGH + a.MEDIUM + a.LOW) { tr.className = 'click'; tr.tabIndex = 0; tr.addEventListener('click', () => pickApp(a.app)); tr.addEventListener('keydown', (e) => { if (e.key === 'Enter') pickApp(a.app); }); }
+      td(tr, a.app);
+      td(tr, fmt(a.HIGH), 'num ' + (a.HIGH ? 'hot' : 'zero'));
+      for (const k of ['MEDIUM', 'LOW', 'withFindings', 'items']) td(tr, fmt(a[k]), 'num' + (a[k] ? '' : ' zero'));
+      for (const k of ['scanned', 'empty', 'errors']) td(tr, fmt(a[k]), 'num wide-only' + (a[k] ? '' : ' zero'));
+      td(tr, a.branch || '—', 'wide-only');
+      const d = new Date(a.scannedAt); td(tr, isNaN(d) ? '' : d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }), 'wide-only small muted');
+      frag.append(tr);
+    }
+    $('a-table').tBodies[0].replaceChildren(frag);
+  }
+  $('a-q').addEventListener('input', (e) => { state.aq = e.target.value; drawApps(); });
+  wireSort($('a-table'), 'aSort', drawApps);
+
+  function drawUnscanned() {
+    const rows = sortRows(model.unscanned, state.uSort);
+    showSort($('u-table'), state.uSort);
+    $('unscanned').hidden = !rows.length;
+    const frag = document.createDocumentFragment();
+    for (const u of rows) {
+      const tr = document.createElement('tr');
+      td(tr, u.app); td(tr, u.type); td(tr, u.name); td(tr, u.status, 'status ' + u.status); td(tr, u.error, 'wide-only small muted');
+      frag.append(tr);
+    }
+    $('u-table').tBodies[0].replaceChildren(frag);
+  }
+  wireSort($('u-table'), 'uSort', drawUnscanned);
+
+  // ---------------------------------------------------------------- CSV export of the filtered findings
+  $('export').addEventListener('click', () => {
+    const cols = ['severity', 'kind', 'app', 'type', 'name', 'handler', 'line', 'item', 'maskedValue', 'reason', 'location', 'snippet'];
+    const esc = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const rows = sortRows(filteredFindings(), state.fSort);
+    const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' }));
+    a.download = `${(model.orgs[0] || 'studio-audit')}_findings.csv`;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+})();
+</script>
+</body>
+</html>
